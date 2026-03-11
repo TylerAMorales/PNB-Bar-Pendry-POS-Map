@@ -1,0 +1,489 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bar Pendry Micros Map</title>
+  <style>
+    /* ===== Base styles ===== */
+    :root{ color-scheme: dark; }
+    *{ box-sizing: border-box; }
+    body{
+      margin:0;
+      font-family: Arial, Helvetica, sans-serif;
+      background:#0f172a;
+      color:#fff;
+    }
+    header{
+      padding:10px;
+      background:#020617;
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap: wrap;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    header h1{
+      margin:0 8px 0 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    header button{
+      padding:8px 12px;
+      border-radius:6px;
+      border:1px solid #334155;
+      background:#0b1220;
+      color:#fff;
+      cursor:pointer;
+    }
+    header button[aria-pressed="true"]{
+      background:#164e63;
+      border-color:#0ea5e9;
+    }
+    #mapContainer{
+      position:relative;
+      width:100%;
+      height: calc(100vh - 66px);
+      overflow:hidden;
+      background: #0b1220;
+    }
+    #floorImage{
+      position:absolute;
+      inset:0;
+      width:100%;
+      height:100%;
+      object-fit:contain;
+      opacity:.9;
+      user-select:none;
+      pointer-events:none;
+    }
+    #terminalsLayer{
+      position:absolute;
+      inset:0;
+    }
+    /* POS terminals (green) */
+    .terminal{
+      position:absolute;
+      width:40px;
+      height:40px;
+      background:#16a34a;
+      border-radius:50%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:11px;
+      font-weight: 700;
+      cursor:default; /* becomes grab in drag-mode */
+      user-select:none;
+      box-shadow: 0 2px 8px rgba(0,0,0,.35);
+      border:1px solid rgba(255,255,255,.15);
+    }
+    /* Info pins (blue) */
+    .pin{
+      position:absolute;
+      width:28px;
+      height:28px;
+      background:#3b82f6;
+      border-radius:50%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color:#fff;
+      font-size:12px;
+      font-weight: 900;
+      cursor:default; /* becomes grab in drag-mode */
+      user-select:none;
+      box-shadow:0 2px 8px rgba(0,0,0,.35);
+      border:1px solid rgba(255,255,255,.2);
+    }
+    /* Drag mode visuals */
+    body.drag-mode .terminal,
+    body.drag-mode .pin{
+      cursor:grab;
+    }
+    body.placing-pin #mapContainer{
+      cursor:crosshair;
+    }
+    /* Side panel */
+    #panel{
+      position:fixed;
+      right:0;
+      top:0;
+      width:320px;
+      height:100%;
+      background:#1e293b;
+      padding:20px;
+      overflow:auto;
+      box-shadow: -4px 0 12px rgba(0,0,0,.35);
+      z-index: 20;
+    }
+    .hidden{ display:none; }
+    #panel h2{
+      margin: 0 0 12px 0;
+      font-size: 18px;
+    }
+    #panel label{
+      display:block;
+      font-size: 12px;
+      color:#cbd5e1;
+      margin-top:8px;
+    }
+    #panel input,
+    #panel textarea{
+      width:100%;
+      margin-top:6px;
+      margin-bottom:10px;
+      padding:8px 10px;
+      border-radius:6px;
+      border:1px solid #334155;
+      background:#0b1220;
+      color:#e2e8f0;
+    }
+    #panel textarea{ min-height: 80px; resize: vertical; }
+    .panel-actions{
+      display:flex; gap:10px; margin-top:10px;
+    }
+    button.danger{
+      background:#ef4444;
+      color:#fff;
+      border:none;
+      padding:8px 12px;
+      border-radius:6px;
+      cursor:pointer;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Bar Pendry Micros Map</h1>
+    <input type="file" id="bgUpload" accept="image/*" />
+    <button id="toggleMove" aria-pressed="false" title="Enable/Disable dragging of markers">Enable Move</button>
+    <button id="addPin" title="Add a blue info pin">Add Info Pin</button>
+    <button id="resetPositions" title="Reset POS terminals to default positions">Reset POS Positions</button>
+    <button id="exportBtn" title="Download all POS & Info Pins to an Excel file">Export Data</button>
+  </header>
+  <div id="mapContainer">
+    <img id="floorImage" alt="Floor plan" />
+    <div id="terminalsLayer"></div>
+  </div>
+
+  <div id="panel" class="hidden">
+    <h2 id="panelTitle"></h2>
+    <label>Name
+      <input id="nameInput" />
+    </label>
+    <div class="terminal-only">
+      <label>Serial Number
+        <input id="snInput" />
+      </label>
+      <label>IP Address
+        <input id="ipInput" />
+      </label>
+      <label>POS User
+        <input id="userInput" />
+      </label>
+      <label>Password
+        <input id="passInput" />
+      </label>
+    </div>
+    <label>Notes
+      <textarea id="notesInput"></textarea>
+    </label>
+    <div class="panel-actions">
+      <button id="saveBtn">Save</button>
+      <button id="deleteBtn" class="danger hidden">Delete</button>
+      <button id="closeBtn">Close</button>
+    </div>
+  </div>
+
+  <script>
+  'use strict';
+  // ================= Data & Persistence =================
+  const defaultTerminals = [
+    { id:"POS1", name:"SVC1", x:830, y:300, sn:"", ip:"", user:"", pass:"", notes:"" },
+    { id:"POS2", name:"SVC2", x:735, y:230, sn:"", ip:"", user:"", pass:"", notes:"" },
+    { id:"POS3", name:"SVC3", x:460, y:450, sn:"", ip:"", user:"", pass:"", notes:"" },
+    { id:"POS4", name:"SVC6", x:480, y:120, sn:"", ip:"", user:"", pass:"", notes:"" },
+    { id:"POS5", name:"SVC7", x:920, y:470, sn:"", ip:"", user:"", pass:"", notes:"" },
+    { id:"POS6", name:"SVC8", x:750, y:300, sn:"", ip:"", user:"", pass:"", notes:"" }
+  ];
+  let terminals = JSON.parse(JSON.stringify(defaultTerminals));
+  let pins = []; // { id, name, x, y, notes }
+
+  function saveData(){
+    try{
+      localStorage.setItem('micros_map', JSON.stringify({ terminals, pins }));
+    }catch(e){ console.warn('Save failed', e); }
+  }
+  function loadData(){
+    const stored = localStorage.getItem('micros_map');
+    if(!stored) return;
+    try{
+      const parsed = JSON.parse(stored);
+      if(Array.isArray(parsed)){
+        // Backward compatibility with older structure that stored only terminals array
+        terminals = parsed; pins = [];
+      }else{
+        terminals = Array.isArray(parsed.terminals) ? parsed.terminals : terminals;
+        pins = Array.isArray(parsed.pins) ? parsed.pins : [];
+      }
+    }catch(e){ console.warn('Load failed', e); }
+  }
+  function resetToDefaults(){
+    terminals = JSON.parse(JSON.stringify(defaultTerminals));
+    saveData();
+  }
+
+  // ================= Elements & State =================
+  const layer = document.getElementById('terminalsLayer');
+  const mapContainer = document.getElementById('mapContainer');
+  const panel = document.getElementById('panel');
+  const nameInput = document.getElementById('nameInput');
+  const snInput = document.getElementById('snInput');
+  const ipInput = document.getElementById('ipInput');
+  const userInput = document.getElementById('userInput');
+  const passInput = document.getElementById('passInput');
+  const notesInput = document.getElementById('notesInput');
+  const deleteBtn = document.getElementById('deleteBtn');
+  const saveBtn = document.getElementById('saveBtn');
+  const closeBtn = document.getElementById('closeBtn');
+  const terminalOnlyBlocks = document.querySelectorAll('.terminal-only');
+
+  let current = null; // selected item (terminal or pin)
+  let currentType = null; // 'terminal' | 'pin'
+  let dragEnabled = false;
+  let placingPin = false;
+
+  function setDragEnabled(on){
+    dragEnabled = !!on;
+    document.body.classList.toggle('drag-mode', dragEnabled);
+  }
+  function startPlacingPin(){ placingPin = true; document.body.classList.add('placing-pin'); }
+  function stopPlacingPin(){ placingPin = false; document.body.classList.remove('placing-pin'); }
+
+  // ================= Render =================
+  function drawAll(){ layer.innerHTML = ''; drawTerminals(); drawPins(); }
+  function drawTerminals(){
+    terminals.forEach(t=>{
+      const el = document.createElement('div');
+      el.className = 'terminal';
+      el.style.left = t.x + 'px';
+      el.style.top = t.y + 'px';
+      el.textContent = t.name || t.id;
+      el.title = `${t.id}
+SN: ${t.sn || ''}
+IP: ${t.ip || ''}`.trim();
+      el.addEventListener('click', (e)=>{ e.stopPropagation(); openPanel(t, 'terminal'); });
+      dragElement(el, t);
+      layer.appendChild(el);
+    });
+  }
+  function drawPins(){
+    pins.forEach(p=>{
+      const el = document.createElement('div');
+      el.className = 'pin';
+      el.style.left = p.x + 'px';
+      el.style.top = p.y + 'px';
+      el.title = p.name || 'Info';
+      el.textContent = 'i';
+      el.addEventListener('click', (e)=>{ e.stopPropagation(); openPanel(p, 'pin'); });
+      dragElement(el, p);
+      layer.appendChild(el);
+    });
+  }
+  function dragElement(el, data){
+    let offsetX=0, offsetY=0;
+    el.addEventListener('mousedown', (e)=>{
+      if(!dragEnabled) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      offsetX = e.clientX - rect.left;
+      offsetY = e.clientY - rect.top;
+      function onMove(ev){
+        const layerRect = layer.getBoundingClientRect();
+        data.x = ev.clientX - layerRect.left - offsetX;
+        data.y = ev.clientY - layerRect.top - offsetY;
+        if(data.x < 0) data.x = 0;
+        if(data.y < 0) data.y = 0;
+        el.style.left = data.x + 'px';
+        el.style.top = data.y + 'px';
+      }
+      function onUp(){
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        saveData();
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
+
+  // ================= Panel =================
+  function openPanel(item, type){
+    current = item;
+    currentType = type || (item && ('sn' in item) ? 'terminal' : 'pin');
+    panel.classList.remove('hidden');
+    document.getElementById('panelTitle').innerText = current.name || (currentType === 'pin' ? 'Info' : '');
+    nameInput.value = current.name || '';
+    notesInput.value = current.notes || '';
+    if(currentType === 'terminal'){
+      snInput.value = current.sn || '';
+      ipInput.value = current.ip || '';
+      userInput.value = current.user || '';
+      passInput.value = current.pass || '';
+      terminalOnlyBlocks.forEach(b=>b.classList.remove('hidden'));
+      deleteBtn.classList.add('hidden');
+    }else{
+      terminalOnlyBlocks.forEach(b=>b.classList.add('hidden'));
+      deleteBtn.classList.remove('hidden');
+      snInput.value = ipInput.value = userInput.value = passInput.value = '';
+    }
+  }
+  closeBtn.addEventListener('click', ()=> panel.classList.add('hidden'));
+  saveBtn.addEventListener('click', ()=>{
+    if(!current) return;
+    current.name = nameInput.value;
+    current.notes = notesInput.value;
+    if(currentType === 'terminal'){
+      current.sn = snInput.value;
+      current.ip = ipInput.value;
+      current.user = userInput.value;
+      current.pass = passInput.value;
+    }
+    saveData();
+    drawAll();
+  });
+  deleteBtn.addEventListener('click', ()=>{
+    if(!current || currentType !== 'pin') return;
+    const idx = pins.findIndex(p=>p.id === current.id);
+    if(idx >= 0){
+      pins.splice(idx,1);
+      saveData();
+      drawAll();
+      panel.classList.add('hidden');
+    }
+  });
+
+  // ================= Background image =================
+  const bgUpload = document.getElementById('bgUpload');
+  const floorImage = document.getElementById('floorImage');
+  (function(){
+    const saved = localStorage.getItem('floor_bg');
+    if(saved){ floorImage.src = saved; }
+  })();
+  bgUpload.addEventListener('change', (e)=>{
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev)=>{
+      floorImage.src = ev.target.result;
+      try{ localStorage.setItem('floor_bg', ev.target.result); }catch(err){}
+    };
+    reader.readAsDataURL(file);
+  });
+
+  // ================= UI controls =================
+  const toggleMove = document.getElementById('toggleMove');
+  toggleMove.addEventListener('click', ()=>{
+    const on = toggleMove.getAttribute('aria-pressed') !== 'true';
+    toggleMove.setAttribute('aria-pressed', String(on));
+    toggleMove.textContent = on ? 'Disable Move' : 'Enable Move';
+    setDragEnabled(on);
+  });
+  document.getElementById('addPin').addEventListener('click', ()=>{
+    startPlacingPin();
+  });
+  document.getElementById('resetPositions').addEventListener('click', ()=>{
+    resetToDefaults();
+    drawAll();
+  });
+  mapContainer.addEventListener('click', (e)=>{
+    if(!placingPin) return;
+    const rect = layer.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const newPin = { id: 'PIN_'+Date.now().toString(36), name:'Info', x, y, notes:'' };
+    pins.push(newPin);
+    saveData();
+    drawAll();
+    stopPlacingPin();
+    openPanel(newPin, 'pin');
+  });
+
+  // ================= Export to Excel (SpreadsheetML 2003) =================
+  function xmlEscape(v){
+    return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+  }
+  function sheetXml(name, rows){
+    const cols = rows.length ? rows[0].length : 0;
+    const colDefs = Array.from({length: cols}).map(()=>'<Column ss:AutoFitWidth="1"/>').join('');
+    const rowXml = rows.map(r => {
+      const cells = r.map(v => `<Cell><Data ss:Type="String">${xmlEscape(v)}</Data></Cell>`).join('');
+      return `<Row>${cells}</Row>`;
+    }).join('');
+    return `
+      <Worksheet ss:Name="${xmlEscape(name)}">
+        <Table>${colDefs}${rowXml}</Table>
+      </Worksheet>`;
+  }
+  function buildWorkbookXml(){
+    const terminalHeaders = ["ID","Name","Serial #","IP","User","Password","Notes","X","Y"];
+    const terminalRows = [terminalHeaders].concat(
+      terminals.map(t => [t.id, t.name||'', t.sn||'', t.ip||'', t.user||'', t.pass||'', t.notes||'', String(t.x||0), String(t.y||0)])
+    );
+    const pinHeaders = ["ID","Name","Notes","X","Y"];
+    const pinRows = [pinHeaders].concat(
+      pins.map(p => [p.id, p.name||'', p.notes||'', String(p.x||0), String(p.y||0)])
+    );
+    const workbook = `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?>
+      <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+        xmlns:o="urn:schemas-microsoft-com:office:office"
+        xmlns:x="urn:schemas-microsoft-com:office:excel"
+        xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+        xmlns:html="http://www.w3.org/TR/REC-html40">
+        <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
+          <Author>Micros Map</Author>
+          <Created>${new Date().toISOString()}</Created>
+        </DocumentProperties>
+        <ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel">
+          <WindowHeight>9000</WindowHeight>
+          <WindowWidth>13860</WindowWidth>
+          <ProtectStructure>False</ProtectStructure>
+          <ProtectWindows>False</ProtectWindows>
+        </ExcelWorkbook>
+        ${sheetXml('POS Terminals', terminalRows)}
+        ${sheetXml('Info Pins', pinRows)}
+      </Workbook>`;
+    return workbook;
+  }
+  function exportToExcel(){
+    try{
+      // Ensure we export the latest persisted data
+      loadData();
+      const xml = buildWorkbookXml();
+      const blob = new Blob([xml], {type: 'application/vnd.ms-excel'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const date = new Date().toISOString().slice(0,10);
+      a.href = url;
+      a.download = `MicrosMap_Data_${date}.xls`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 5000);
+    }catch(err){
+      alert('Export failed: '+err.message);
+      console.error(err);
+    }
+  }
+  document.getElementById('exportBtn').addEventListener('click', exportToExcel);
+
+  // ================= Init =================
+  loadData();
+  drawAll();
+  </script>
+</body>
+</html>
